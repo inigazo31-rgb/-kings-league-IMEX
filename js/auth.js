@@ -1,337 +1,190 @@
-import { store } from "./store.js";
-import { DEMO_PASSWORD, SEED_ACCOUNTS } from "./data.js";
-import { uid } from "./utils.js";
+import { store } from "../store.js";
+import { auth } from "../auth.js";
+import { SEED_ACCOUNTS, DEMO_PASSWORD } from "../data.js";
+import { esc, icon, leagueMark, roleLabel } from "../utils.js";
+import { toast, formValues } from "../ui.js";
+import { field } from "./shared.js";
 
-const SESSION_KEY = "imex.session.v1";
-const ITERATIONS = 60000;
+const DEMO_IDS = ["u-admin", "u-cuervos", "u-carlos", "u-fan"];
 
-function bytesToHex(buffer) {
-  return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+function nextPath(query) {
+  const next = String(query.next || "").replace(/^#?\/?/, "");
+  if (!next || next.startsWith("acceso")) return "cuenta";
+  return next;
 }
 
-function randomSalt() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return bytesToHex(bytes.buffer);
+function signedIn() {
+  const user = store.user;
+  const team = user?.teamId ? store.team(user.teamId) : null;
+  const player = user?.playerId ? store.player(user.playerId) : null;
+  return `<div class="auth-page">
+    <div class="auth-split" style="grid-template-columns:1fr;max-width:520px">
+      <div class="auth-card">
+        <span class="rule-card__icon" style="width:48px;height:48px;margin-bottom:18px">${leagueMark(28, "lime")}</span>
+        <p class="eyebrow">Sesión activa</p>
+        <h1>Hola, ${esc(user.name.split(" ")[0])}.</h1>
+        <p class="auth-card__copy">Ya tienes la sesión iniciada como ${esc(roleLabel(user.role))}${team ? ` de ${esc(team.name)}` : ""}${player ? ` · ${esc(player.name)}` : ""}.</p>
+        <div class="account-card" style="margin-top:20px">
+          <span class="avatar avatar--lg">${esc(user.name.slice(0, 2).toUpperCase())}</span>
+          <div><p class="account-card__name">${esc(user.name)}</p><p class="account-card__email">${esc(user.email)}</p><div class="account-meta"><span class="pill pill--ink">${esc(roleLabel(user.role))}</span>${team ? `<span class="pill pill--outline">${esc(team.short)}</span>` : ""}</div></div>
+        </div>
+        <div class="form-actions" style="justify-content:flex-start">
+          <a class="btn btn--primary" href="#/cuenta">${icon("user", 15)} Mi cuenta</a>
+          ${user.role === "ADMIN" ? `<a class="btn btn--ghost" href="#/admin">Panel organizador</a>` : ""}
+          <button class="btn btn--ghost" type="button" data-logout>${icon("logout", 15)} Cerrar sesión</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
-async function derive(password, salt, iterations = ITERATIONS) {
-  if (!crypto?.subtle) throw new Error("Este navegador no permite cifrar contraseñas. Abre la plataforma desde localhost o HTTPS.");
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: new TextEncoder().encode(salt), iterations, hash: "SHA-256" },
-    key,
-    256
-  );
-  return bytesToHex(bits);
-}
+export default {
+  render({ query }) {
+    if (store.user) return signedIn();
+    const tab = query.tab === "crear" ? "crear" : "entrar";
+    const next = query.next || "";
+    const nextQuery = next ? `?next=${encodeURIComponent(next)}` : "";
+    const demo = SEED_ACCOUNTS.filter((account) => DEMO_IDS.includes(account.id));
+    return `<div class="auth-page">
+      <div class="auth-split">
+        <aside class="auth-visual">
+          <div class="auth-visual__top">${leagueMark(42, "lime")}</div>
+          <div class="auth-visual__copy">
+            <p class="eyebrow">Kings League IMEX · ${esc(store.state.league.season)}</p>
+            <h2>La liga también se juega fuera de la cancha.</h2>
+            <p>Consulta resultados en vivo, gestiona tu club, ficha jugadores, arma tu Fantasy y compite con la comunidad IMEX. Una sola cuenta para todo.</p>
+          </div>
+          <div class="auth-visual__bottom">
+            <span>${store.state.teams.length} clubes</span>
+            <span>${store.state.players.length} jugadores</span>
+            <span>${store.state.matches.length} partidos</span>
+            <span>Sincronización en vivo</span>
+          </div>
+        </aside>
 
-function normalizeEmail(email = "") {
-  return String(email).trim().toLowerCase();
-}
+        <div class="auth-card">
+          <p class="eyebrow">Acceso a la plataforma</p>
+          <h1>${tab === "crear" ? "Crea tu cuenta." : "Bienvenido."}</h1>
+          <p class="auth-card__copy">${tab === "crear" ? "Regístrate como aficionado o jugador. Los accesos de presidente y organizador los asigna la liga." : "Entra con tu correo y contraseña. Tu sesión se mantiene guardada en este dispositivo."}</p>
 
-function safeAccount(account) {
-  if (!account) return null;
-  return {
-    id: account.id,
-    email: account.email,
-    name: account.name,
-    role: account.role,
-    teamId: account.teamId || null,
-    playerId: account.playerId || null,
-    createdAt: account.createdAt || null
-  };
-}
+          <div class="auth-tabs" role="tablist">
+            <a class="${tab === "entrar" ? "is-active" : ""}" href="#/acceso${nextQuery}">Entrar</a>
+            <a class="${tab === "crear" ? "is-active" : ""}" href="#/acceso?tab=crear${next ? `&next=${encodeURIComponent(next)}` : ""}">Crear cuenta</a>
+          </div>
 
-function mapProfile(profile) {
-  return {
-    id: profile.id,
-    email: profile.email,
-    name: profile.name || profile.email?.split("@")[0] || "Cuenta IMEX",
-    role: profile.role || "FAN",
-    teamId: profile.team_id || null,
-    playerId: profile.player_id || null,
-    createdAt: profile.created_at || null
-  };
-}
+          ${tab === "entrar" ? `<form class="auth-form" data-login-form>
+            ${field({ label: "Correo electrónico", name: "email", type: "email", required: true, placeholder: "tu@correo.com", autocomplete: "email" })}
+            <div class="field">
+              <label for="loginPassword">Contraseña</label>
+              <div class="password-wrap">
+                <input id="loginPassword" name="password" type="password" required autocomplete="current-password" placeholder="••••••••">
+                <button class="icon-btn icon-btn--sm" type="button" data-toggle-pass aria-label="Mostrar contraseña">${icon("eye", 16)}</button>
+              </div>
+            </div>
+            <label class="check"><input type="checkbox" name="remember" checked><span>Mantener la sesión en este dispositivo</span></label>
+            <p class="auth-error" data-error hidden></p>
+            <button class="btn btn--primary btn--block" type="submit">${icon("lock", 15)} Iniciar sesión</button>
+          </form>
 
-class Auth {
-  constructor() {
-    this.user = null;
-    this.mode = "local";
-    this.supabase = null;
-    this.remember = true;
-  }
+          <div class="demo-accounts">
+            <div class="demo-accounts__head"><p class="eyebrow">Accesos de demostración</p><span class="tiny muted mono">${auth.mode === "local" ? `Clave ${DEMO_PASSWORD}` : "Solo modo local"}</span></div>
+            <div class="demo-accounts__grid">
+              ${demo.map((account) => `<button class="demo-account" type="button" data-demo-email="${esc(account.email)}">
+                <strong>${esc(roleLabel(account.role))}</strong><span>${esc(account.email)}</span>
+              </button>`).join("")}
+            </div>
+            <p class="field__hint" style="margin-top:8px">Toca un acceso para rellenar el formulario. En modo local todos usan la misma clave de demostración.</p>
+          </div>` : `<form class="auth-form" data-register-form>
+            ${field({ label: "Nombre completo", name: "name", required: true, placeholder: "Tu nombre", autocomplete: "name" })}
+            ${field({ label: "Correo electrónico", name: "email", type: "email", required: true, placeholder: "tu@correo.com", autocomplete: "email" })}
+            ${field({ label: "Contraseña", name: "password", type: "password", required: true, placeholder: "Mínimo 8 caracteres", autocomplete: "new-password", hint: "Usa al menos 8 caracteres. Se guarda cifrada." })}
+            <div class="form-grid">
+              ${field({ label: "Tipo de cuenta", name: "role", type: "select", value: "FAN", options: [{ value: "FAN", label: "Aficionado" }, { value: "PLAYER", label: "Jugador" }] })}
+              ${field({ label: "Club (si eres jugador)", name: "teamId", type: "select", value: "", options: [{ value: "", label: "Sin club" }, ...store.state.teams.map((team) => ({ value: team.id, label: team.name }))] })}
+            </div>
+            <p class="auth-error" data-error hidden></p>
+            <button class="btn btn--primary btn--block" type="submit">${icon("user", 15)} Crear cuenta</button>
+            <p class="field__hint">Al crear una cuenta aceptas el reglamento de la liga y el tratamiento de datos de la plataforma.</p>
+          </form>`}
+        </div>
+      </div>
+    </div>`;
+  },
+  bind(root, { query }) {
+    const toggle = root.querySelector("[data-toggle-pass]");
+    const password = root.querySelector("#loginPassword");
+    toggle?.addEventListener("click", () => {
+      if (!password) return;
+      const show = password.type === "password";
+      password.type = show ? "text" : "password";
+      toggle.innerHTML = icon(show ? "eyeOff" : "eye", 16);
+      toggle.setAttribute("aria-label", show ? "Ocultar contraseña" : "Mostrar contraseña");
+    });
 
-  async init() {
-    const config = store.getSupabaseConfig();
-    if (config.url && config.key && window.supabase) {
-      this.supabase = store.supabase || window.supabase.createClient(config.url, config.key, {
-        auth: { persistSession: true, autoRefreshToken: true }
-      });
-      this.mode = "supabase";
-      const { data } = await this.supabase.auth.getSession();
-      if (data?.session) {
-        await this.loadSupabaseProfile(data.session.user);
-      }
-      return;
-    }
-    this.mode = "local";
-    await this.seedLocal();
-    const saved = this.readSession();
-    if (saved) {
-      const account = store.account(saved.accountId);
-      if (account) this.user = safeAccount(account);
-    }
-  }
-
-  readSession() {
-    try {
-      const raw = localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  writeSession(accountId, remember = true) {
-    const payload = JSON.stringify({ accountId, at: Date.now() });
-    this.remember = remember;
-    if (remember) {
-      localStorage.setItem(SESSION_KEY, payload);
-      sessionStorage.removeItem(SESSION_KEY);
-    } else {
-      sessionStorage.setItem(SESSION_KEY, payload);
-      localStorage.removeItem(SESSION_KEY);
-    }
-  }
-
-  clearSession() {
-    localStorage.removeItem(SESSION_KEY);
-    sessionStorage.removeItem(SESSION_KEY);
-  }
-
-  async seedLocal() {
-    if (store.state.accounts.length) return;
-    const accounts = await Promise.all(
-      SEED_ACCOUNTS.map(async (account) => {
-        const salt = randomSalt();
-        const passwordHash = await derive(DEMO_PASSWORD, salt);
-        return {
-          ...account,
-          email: normalizeEmail(account.email),
-          salt,
-          iterations: ITERATIONS,
-          passwordHash,
-          createdAt: new Date().toISOString()
-        };
-      })
-    );
-    store.state.accounts = accounts;
-    store.save("seed-accounts");
-  }
-
-  async signIn(email, password, remember = true) {
-    const normalized = normalizeEmail(email);
-    if (!normalized || !password) throw new Error("Escribe tu correo y contraseña.");
-    if (this.mode === "supabase") {
-      const { data, error } = await this.supabase.auth.signInWithPassword({ email: normalized, password });
-      if (error) throw new Error(this.friendlyError(error.message));
-      await this.loadSupabaseProfile(data.user);
-      this.writeSession(data.user.id, remember);
-      return this.user;
-    }
-    const account = store.state.accounts.find((item) => normalizeEmail(item.email) === normalized);
-    if (!account) throw new Error("Correo o contraseña incorrectos.");
-    const hash = await derive(password, account.salt, account.iterations || ITERATIONS);
-    if (hash !== account.passwordHash) throw new Error("Correo o contraseña incorrectos.");
-    this.user = safeAccount(account);
-    this.writeSession(account.id, remember);
-    store.setUser(this.user);
-    return this.user;
-  }
-
-  async signUp({ name, email, password, role = "FAN", teamId = null }) {
-    const normalized = normalizeEmail(email);
-    if (!name?.trim()) throw new Error("Escribe tu nombre.");
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new Error("Escribe un correo válido.");
-    if (String(password).length < 8) throw new Error("La contraseña debe tener al menos 8 caracteres.");
-    if (!["FAN", "PLAYER"].includes(role)) role = "FAN";
-    if (this.mode === "supabase") {
-      const { data, error } = await this.supabase.auth.signUp({
-        email: normalized,
-        password,
-        options: { data: { name: name.trim(), role, team_id: teamId } }
-      });
-      if (error) throw new Error(this.friendlyError(error.message));
-      if (!data.session) {
-        throw new Error("Cuenta creada. Revisa tu correo para confirmarla y después inicia sesión.");
-      }
-      await this.loadSupabaseProfile(data.user);
-      this.writeSession(data.user.id, true);
-      return this.user;
-    }
-    if (store.state.accounts.some((item) => normalizeEmail(item.email) === normalized)) {
-      throw new Error("Ya existe una cuenta con ese correo.");
-    }
-    const salt = randomSalt();
-    const passwordHash = await derive(password, salt);
-    const account = {
-      id: uid("u"),
-      email: normalized,
-      name: name.trim(),
-      role,
-      teamId: role === "PLAYER" ? teamId : null,
-      playerId: null,
-      salt,
-      iterations: ITERATIONS,
-      passwordHash,
-      createdAt: new Date().toISOString()
+    const setError = (message = "") => {
+      const box = root.querySelector("[data-error]");
+      if (!box) return;
+      box.textContent = message;
+      box.hidden = !message;
     };
-    store.addAccount(account);
-    this.user = safeAccount(account);
-    this.writeSession(account.id, true);
-    store.setUser(this.user);
-    return this.user;
-  }
 
-  async signOut() {
-    if (this.mode === "supabase" && this.supabase) await this.supabase.auth.signOut();
-    this.clearSession();
-    this.user = null;
-    store.setUser(null);
-  }
-
-  async changePassword(currentPassword, newPassword) {
-    if (String(newPassword).length < 8) throw new Error("La nueva contraseña debe tener al menos 8 caracteres.");
-    if (this.mode === "supabase") {
-      const { error } = await this.supabase.auth.updateUser({ password: newPassword });
-      if (error) throw new Error(this.friendlyError(error.message));
-      return;
-    }
-    const account = store.account(this.user?.id);
-    if (!account) throw new Error("Sesión no válida.");
-    const currentHash = await derive(currentPassword, account.salt, account.iterations || ITERATIONS);
-    if (currentHash !== account.passwordHash) throw new Error("La contraseña actual no es correcta.");
-    const salt = randomSalt();
-    account.salt = salt;
-    account.passwordHash = await derive(newPassword, salt);
-    account.iterations = ITERATIONS;
-    store.updateAccount(account.id, account);
-  }
-
-  async adminSetPassword(accountId, newPassword) {
-    if (String(newPassword).length < 8) throw new Error("La contraseña debe tener al menos 8 caracteres.");
-    if (this.mode === "supabase") {
-      return this.callAdminFunction({ action: "set_password", accountId, password: newPassword });
-    }
-    const account = store.account(accountId);
-    if (!account) throw new Error("Cuenta no encontrada.");
-    const salt = randomSalt();
-    account.salt = salt;
-    account.passwordHash = await derive(newPassword, salt);
-    account.iterations = ITERATIONS;
-    store.updateAccount(account.id, account);
-  }
-
-  async adminCreateAccount({ name, email, password, role, teamId, playerId }) {
-    const normalized = normalizeEmail(email);
-    if (this.mode === "supabase") {
-      return this.callAdminFunction({ action: "create", name, email: normalized, password, role, teamId, playerId });
-    }
-    if (store.state.accounts.some((item) => normalizeEmail(item.email) === normalized)) {
-      throw new Error("Ya existe una cuenta con ese correo.");
-    }
-    if (String(password).length < 8) throw new Error("La contraseña debe tener al menos 8 caracteres.");
-    const salt = randomSalt();
-    const account = {
-      id: uid("u"),
-      email: normalized,
-      name,
-      role,
-      teamId: teamId || null,
-      playerId: playerId || null,
-      salt,
-      iterations: ITERATIONS,
-      passwordHash: await derive(password, salt),
-      createdAt: new Date().toISOString()
-    };
-    store.addAccount(account);
-    return safeAccount(account);
-  }
-
-  async adminUpdateAccount(accountId, patch) {
-    if (this.mode === "supabase") {
-      return this.callAdminFunction({
-        action: "update",
-        accountId,
-        name: patch.name,
-        email: patch.email,
-        role: patch.role,
-        teamId: patch.teamId || null,
-        playerId: patch.playerId || null
+    root.querySelectorAll("[data-demo-email]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const email = root.querySelector('input[name="email"]');
+        const pass = root.querySelector('input[name="password"]');
+        if (email) email.value = button.dataset.demoEmail;
+        if (pass) pass.value = DEMO_PASSWORD;
+        setError("");
+        email?.focus();
       });
-    }
-    store.updateAccount(accountId, patch);
-  }
+    });
 
-  async adminDeleteAccount(accountId) {
-    if (this.mode === "supabase") {
-      return this.callAdminFunction({ action: "delete", accountId });
-    }
-    store.deleteAccount(accountId);
-    if (this.user?.id === accountId) await this.signOut();
-  }
+    const login = root.querySelector("[data-login-form]");
+    login?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = login.querySelector('button[type="submit"]');
+      const values = formValues(login);
+      setError("");
+      button.disabled = true;
+      button.classList.add("is-loading");
+      try {
+        await auth.signIn(values.email, values.password, Boolean(login.querySelector('[name="remember"]')?.checked));
+        toast(`Bienvenido, ${store.user?.name || "manager"}.`, "success");
+        location.hash = `#/${nextPath(query)}`;
+      } catch (error) {
+        setError(error.message);
+        toast(error.message, "danger");
+      } finally {
+        button.disabled = false;
+        button.classList.remove("is-loading");
+      }
+    });
 
-  async fetchAccounts() {
-    if (this.mode === "supabase") {
-      const { data, error } = await this.supabase.from("profiles").select("*").order("created_at", { ascending: true });
-      if (error) throw new Error(this.friendlyError(error.message));
-      return (data || []).map(mapProfile);
-    }
-    return store.state.accounts.map(safeAccount);
+    const register = root.querySelector("[data-register-form]");
+    register?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = register.querySelector('button[type="submit"]');
+      const values = formValues(register);
+      setError("");
+      button.disabled = true;
+      button.classList.add("is-loading");
+      try {
+        await auth.signUp({
+          name: values.name,
+          email: values.email,
+          password: values.password,
+          role: values.role,
+          teamId: values.teamId || null
+        });
+        toast("Cuenta creada. Ya formas parte de IMEX.", "success");
+        location.hash = `#/${nextPath(query)}`;
+      } catch (error) {
+        setError(error.message);
+        toast(error.message, "danger");
+      } finally {
+        button.disabled = false;
+        button.classList.remove("is-loading");
+      }
+    });
   }
-
-  async loadSupabaseProfile(authUser) {
-    if (!authUser) return null;
-    const { data, error } = await this.supabase.from("profiles").select("*").eq("id", authUser.id).maybeSingle();
-    if (error) throw new Error(this.friendlyError(error.message));
-    if (data) {
-      this.user = mapProfile(data);
-    } else {
-      const profile = {
-        id: authUser.id,
-        email: authUser.email,
-        name: authUser.user_metadata?.name || authUser.email?.split("@")[0] || "Cuenta IMEX",
-        role: authUser.user_metadata?.role === "PLAYER" ? "PLAYER" : "FAN",
-        team_id: authUser.user_metadata?.team_id || null,
-        player_id: null
-      };
-      const inserted = await this.supabase.from("profiles").insert(profile).select("*").single();
-      if (inserted.error) throw new Error(this.friendlyError(inserted.error.message));
-      this.user = mapProfile(inserted.data);
-    }
-    store.setUser(this.user);
-    return this.user;
-  }
-
-  async callAdminFunction(payload) {
-    try {
-      const { data, error } = await this.supabase.functions.invoke("admin-account", { body: payload });
-      if (error) throw error;
-      return data;
-    } catch (error) {
-      throw new Error("La gestión avanzada de cuentas requiere desplegar la función admin-account de Supabase. Revisa la guía de configuración.");
-    }
-  }
-
-  friendlyError(message = "") {
-    if (/invalid login credentials/i.test(message)) return "Correo o contraseña incorrectos.";
-    if (/email not confirmed/i.test(message)) return "Confirma tu correo antes de iniciar sesión.";
-    if (/user already registered/i.test(message)) return "Ya existe una cuenta con ese correo.";
-    if (/password/i.test(message)) return "La contraseña no cumple los requisitos.";
-    return message || "No se pudo completar la operación.";
-  }
-}
-
-export const auth = new Auth();
+};
