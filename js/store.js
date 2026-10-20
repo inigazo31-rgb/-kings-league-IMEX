@@ -1,12 +1,10 @@
 import { seedState, LEAGUE } from "./data.js";
 import { byPoints, uid } from "./utils.js";
-import { toast } from "./ui.js";
 
 const STORAGE_KEY = "imex.league.v2";
 const CONFIG_KEY = "imex.supabase.v1";
 const SUPABASE_TABLE = "app_state";
-const DRAFT_SECONDS = 30;
-const SQUAD_BUDGET = 350;
+const DRAFT_SECONDS = 45;
 
 function defaultDraft() {
   return {
@@ -153,9 +151,8 @@ class Store {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
     } catch (error) {
-      this.lastError = "No hay espacio local suficiente. Usa fotos más ligeras o exporta el respaldo.";
+      this.lastError = "No hay espacio local suficiente. Elimina alguna foto o exporta el respaldo.";
       console.warn(this.lastError, error);
-      toast(this.lastError, "danger", "No se guardó");
     }
     if (this.channel) {
       this.channel.postMessage({ type: "state", clientId: this.clientId, state: this.state, reason });
@@ -184,37 +181,8 @@ class Store {
     return this.state.players.filter((player) => player.teamId === teamId);
   }
 
-  // El insignia no tiene valor: no cuenta para el presupuesto de 350 M.
   teamValue(teamId) {
-    return this.teamPlayers(teamId).reduce((sum, player) => sum + (player.insignia ? 0 : Number(player.value) || 0), 0);
-  }
-
-  // Reparto de 350 M entre la plantilla (sin insignia). Debe sumar exactamente 350.
-  saveSquadValuation(teamId, values) {
-    const team = this.team(teamId);
-    if (!team) return { ok: false, message: "Club no encontrado." };
-    if (!this.canActForClub(teamId)) return { ok: false, message: "Solo el presidente de ese club puede repartir el presupuesto." };
-    const squad = this.teamPlayers(teamId).filter((player) => !player.insignia);
-    if (!squad.length) return { ok: false, message: "El club no tiene jugadores para valorar." };
-    const parsed = squad.map((player) => ({ player, value: Math.round(Number(values[player.id])) }));
-    if (parsed.some((item) => !Number.isFinite(item.value) || item.value < 0)) {
-      return { ok: false, message: "Introduce un valor válido para cada jugador." };
-    }
-    const total = parsed.reduce((sum, item) => sum + item.value, 0);
-    if (total !== SQUAD_BUDGET) {
-      return { ok: false, message: `Debes repartir exactamente ${SQUAD_BUDGET} M. Llevas ${total} M.` };
-    }
-    parsed.forEach(({ player, value }) => { player.value = value; });
-    team.squadValue = this.teamValue(teamId);
-    team.balance = 0;
-    team.valuationDone = true;
-    this.addActivity("team", `${team.name} ha repartido su presupuesto de ${SQUAD_BUDGET} M.`);
-    this.save("squad-valuation");
-    return { ok: true, message: `Plantilla valorada en ${SQUAD_BUDGET} M.` };
-  }
-
-  squadBudget() {
-    return SQUAD_BUDGET;
+    return this.teamPlayers(teamId).reduce((sum, player) => sum + (Number(player.value) || 0), 0);
   }
 
   standings(group = null) {
@@ -744,21 +712,15 @@ class Store {
     if (order.length < 2 || !this.state.players.length) {
       return { ok: false, message: "Registra al menos dos clubes y un jugador antes de iniciar el draft." };
     }
-    // Los insignia ya tienen club asignado desde el registro; no entran en el draft ni tienen valor.
-    const pool = this.state.players.filter((player) => !player.insignia).map((player) => player.id);
-    if (!pool.length) {
-      return { ok: false, message: "No hay jugadores disponibles para el draft. Registra jugadores que no sean insignia." };
-    }
+    const budget = Number(this.state.league.budgetPerTeam) || 200;
     this.state.players.forEach((player) => {
-      if (!player.insignia) player.teamId = null;
+      player.teamId = null;
       player.status = player.insignia ? "insignia" : "available";
     });
-    // Regla de la liga: los 350 M se reparten en la plantilla (sin insignia); el saldo libre queda en 0.
     this.state.teams.forEach((team) => {
-      team.balance = 0;
+      team.balance = budget;
       team.squadValue = 0;
       team.clausulazoUsed = false;
-      team.valuationDone = false;
     });
     this.state.draft = {
       ...defaultDraft(),
@@ -766,7 +728,7 @@ class Store {
       order,
       currentTeamId: order[0],
       turnStartedAt: Date.now(),
-      poolPlayerIds: pool
+      poolPlayerIds: this.state.players.map((player) => player.id)
     };
     this.addActivity("draft", "Ha comenzado el draft en vivo.");
     this.save("draft-start");
